@@ -1,0 +1,7 @@
+# better-sqlite3 is a native module. Some Nixpacks/Railway build images don't
+# ship a prebuilt binary for every Node version, so make sure node-gyp's
+# source-compile fallback has everything it needs (and pin Node to a
+# widely-supported LTS to make prebuilt binaries more likely in the first
+# place).
+[phases.setup]
+nixPkgs = ["nodejs_20", "python3", "gcc", "gnumake"]
