@@ -17,7 +17,7 @@ const body = Inter({
 
 export const metadata: Metadata = {
   title: "Sooner Shuttle Service",
-  description: "Reserve your game-day shuttle seat between the motel and campus. $25/person.",
+  description: "Reserve your game-day shuttle seat between the motel and campus. $20/person.",
 };
 
 export const viewport: Viewport = {
