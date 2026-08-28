@@ -1,14 +1,11 @@
 import { NextResponse } from "next/server";
 import { getSlotById, MAX_RIDERS_PER_SLOT, PRICE_PER_RIDER_CENTS, directionLabel } from "@/lib/slots";
+import { cardTotalCents } from "@/lib/pricing";
+import { isValidEmail, isValidPhone } from "@/lib/validate";
 import { attachStripeSession, cancelBooking, createPendingBooking, NotEnoughSeatsError, PENDING_HOLD_MINUTES } from "@/lib/db";
 import { getSiteUrl, getStripe } from "@/lib/stripe";
 
 export const dynamic = "force-dynamic";
-
-function isValidPhone(phone: string): boolean {
-  const digits = phone.replace(/\D/g, "");
-  return digits.length >= 7 && digits.length <= 15;
-}
 
 export async function POST(req: Request) {
   let body: any;
@@ -21,6 +18,7 @@ export async function POST(req: Request) {
   const slotId = String(body?.slotId || "");
   const name = String(body?.name || "").trim();
   const phone = String(body?.phone || "").trim();
+  const email = String(body?.email || "").trim();
   const riders = Number(body?.riders);
 
   const slot = getSlotById(slotId);
@@ -33,15 +31,23 @@ export async function POST(req: Request) {
   if (!isValidPhone(phone)) {
     return NextResponse.json({ error: "Please enter a valid mobile number" }, { status: 400 });
   }
+  if (!isValidEmail(email)) {
+    return NextResponse.json({ error: "Please enter a valid email" }, { status: 400 });
+  }
   if (!Number.isInteger(riders) || riders < 1 || riders > MAX_RIDERS_PER_SLOT) {
     return NextResponse.json({ error: "Invalid number of riders" }, { status: 400 });
   }
 
-  const amountCents = riders * PRICE_PER_RIDER_CENTS;
+  // Gross the total up so that after Stripe's processing fee is taken out,
+  // we still net $PRICE_PER_RIDER_CENTS × riders — the same amount a cash
+  // rider pays. The fixed portion of the fee applies once per charge, so
+  // this must be computed on the whole-cart total, not per rider.
+  const netCents = riders * PRICE_PER_RIDER_CENTS;
+  const totalCents = cardTotalCents(netCents);
 
   let booking;
   try {
-    booking = createPendingBooking({ slotId, name, phone, riders, amountCents });
+    booking = createPendingBooking({ slotId, name, phone, email, riders, amountCents: totalCents });
   } catch (err) {
     if (err instanceof NotEnoughSeatsError) {
       return NextResponse.json(
@@ -59,22 +65,24 @@ export async function POST(req: Request) {
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       payment_method_types: ["card"],
-      // Checkout Sessions collect the customer's email by default whenever
-      // `customer_email` isn't prefilled — leave it unset (and don't add
-      // anything that would suppress it) so the rider is prompted for an
-      // email we can send their booking code to. Captured on the webhook
-      // side via session.customer_details.email.
+      // We already collected the rider's email on our own form, so prefill
+      // it (Stripe locks the field when customer_email is set, avoiding a
+      // re-type) rather than relying solely on Stripe to collect it.
+      customer_email: email,
+      // A single line item for the whole-cart total (base price + card fee)
+      // rather than a per-rider unit price, since the fee's fixed portion
+      // doesn't divide evenly per rider.
       line_items: [
         {
           price_data: {
             currency: "usd",
-            unit_amount: PRICE_PER_RIDER_CENTS,
+            unit_amount: totalCents,
             product_data: {
-              name: `Sooner Shuttle — ${directionLabel(slot.direction)} (${slot.label})`,
-              description: `${slot.from} → ${slot.to}`,
+              name: `Sooner Shuttle — ${directionLabel(slot.direction)} (${slot.label}) × ${riders} rider${riders > 1 ? "s" : ""}`,
+              description: `${slot.from} → ${slot.to} · includes card processing fee`,
             },
           },
-          quantity: riders,
+          quantity: 1,
         },
       ],
       metadata: {

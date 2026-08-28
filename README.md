@@ -4,7 +4,9 @@ Mobile-first booking site for a one-day game-day shuttle between:
 
 - **Pickup (motel):** 770 Copperfield Dr, Norman, OK 73072
 - **Drop-off (campus):** 900 College Ave, Norman, OK 73072
-- **Price:** $25/person, 14 paying riders per trip (15-seat van incl. driver)
+- **Price:** $20/person net, 14 paying riders per trip (15-seat van incl. driver)
+  — riders choose **cash on board** ($20 flat) or **card now** ($20 + an
+  estimated Stripe processing fee, so the organizer still nets $20 either way)
 
 Trips (each a separate 14-seat hold):
 
@@ -123,48 +125,74 @@ Back up `data/bookings.db` after the event if you want a permanent record —
 it's just a SQLite file, so `sqlite3 data/bookings.db .dump` works, or export
 everything from the admin dashboard.
 
+## Pricing & the two payment options
+
+`PRICE_PER_RIDER_CENTS` in `lib/slots.ts` ($20.00) is what the organizer nets
+per rider no matter which option the rider picks:
+
+- **Cash on board** — exactly $20 × riders, collected by the driver. The
+  booking is confirmed the instant the rider reserves (no Stripe involved),
+  and shows as "Cash due" in the admin dashboard until you mark it collected.
+- **Card now** — $20 × riders, grossed up so that after Stripe's card fee is
+  taken out, you still net $20/rider. The gross-up uses Stripe's standard US
+  rate (`STRIPE_PERCENT_FEE` = 2.9%, `STRIPE_FIXED_FEE_CENTS` = $0.30, in
+  `lib/pricing.ts`) — real fees vary a little by card type, so this is a
+  close estimate, not a guarantee. Adjust those two constants if your actual
+  Stripe rate differs.
+
 ## How booking/payment works
 
-1. Rider picks a slot + enters name/phone/riders → `POST /api/checkout`.
-2. The server atomically checks remaining seats and inserts a `pending`
-   booking row holding those seats for 31 minutes, then creates a Stripe
-   Checkout Session and redirects the rider to Stripe.
-3. Stripe calls `POST /api/webhook` when payment succeeds, which flips the
-   booking to `paid` — this is the only way a seat becomes permanently
-   confirmed. If the rider abandons checkout, the session expires and the
-   hold is released automatically.
-4. The success page (`/confirmation`) polls until the webhook has landed,
-   then shows the booking code and trip details.
-5. Availability shown on the booking page = 14 − (paid riders + riders
-   currently mid-checkout for that slot), so seats can never be oversold.
-6. The same webhook call that flips a booking to `paid` — and only on the
-   actual pending/held → paid transition, never on a retried/duplicate
-   webhook event — sends the rider a confirmation email (via Resend) with
-   their booking code, trip, pickup/drop-off, riders, and amount paid. If
-   `ENABLE_SMS=true` it also texts the code via Twilio. A delivery failure
-   is logged and recorded on the booking, but never fails the webhook or
-   un-confirms the seat — payment success is what matters, notification is
-   best-effort.
+1. Rider picks a slot, enters name/phone/email, picks **Cash** or **Card**,
+   and riders count.
+2. **Cash:** `POST /api/reserve-cash` atomically checks remaining seats and
+   inserts a `paid` booking (seat held immediately, `payment_status` stays
+   `unpaid` until an admin marks the cash collected), sends the confirmation
+   email right away, and returns a booking code — the rider goes straight to
+   `/confirmation?code=...`, no redirect needed.
+3. **Card:** `POST /api/checkout` atomically checks remaining seats, inserts
+   a `pending` booking holding those seats for 31 minutes, then creates a
+   Stripe Checkout Session (prefilled with the rider's email) for the
+   grossed-up total and redirects there.
+4. Stripe calls `POST /api/webhook` when payment succeeds, which flips the
+   booking to `paid` / `payment_status: paid` — this is the only way a card
+   seat becomes permanently confirmed. If the rider abandons checkout, the
+   session expires and the hold is released automatically.
+5. The success page (`/confirmation`) shows the cash booking code instantly,
+   or polls until the card webhook has landed, then shows the booking code
+   and trip details either way.
+6. Availability shown on the booking page = 14 − (all held/confirmed riders,
+   cash or card, + riders currently mid-checkout for that slot), so seats can
+   never be oversold regardless of payment method.
+7. Sending the confirmation email (via Resend, plus SMS if `ENABLE_SMS=true`)
+   happens once per booking — right away for cash, or on the pending→paid
+   webhook transition for card, never resent on a retried/duplicate webhook
+   event. A delivery failure is logged and recorded on the booking, but never
+   blocks the reservation or un-confirms the seat.
 
 ## Admin panel
 
 Go to `/admin`, log in with `ADMIN_PASSWORD`. The dashboard groups bookings
-by slot, shows seats booked/remaining and revenue per slot and overall, and
-lets you:
+by slot, shows seats booked/remaining, revenue collected, and outstanding
+cash due per slot and overall, and lets you:
 
 - **Cancel** a booking (frees its seats immediately).
-- **Mark paid** manually (e.g. a cash rider you're tracking by hand).
-- **Resend code** — re-sends the confirmation email for any paid booking,
-  for a rider who lost their code. Each row also shows a small "✓ code
-  emailed" / "✗ email failed" note so you can see who still needs one sent
-  by hand.
+- **Mark cash collected** (cash bookings) / **Mark paid** (card bookings
+  stuck in a weird state) — flips `payment_status` to paid so it counts as
+  revenue instead of cash due.
+- **Resend code** — re-sends the confirmation email for any confirmed
+  booking, for a rider who lost their code. Each row also shows a small "✓
+  code emailed" / "✗ email failed" note so you can see who still needs one
+  sent by hand.
 
 ## Notes / limitations
 
 - Overbooking protection relies on SQLite transactions inside a single
   Node.js process — don't run multiple instances behind a load balancer
   without moving to a real multi-writer database first.
-- Phone/name are not verified beyond basic format checks.
+- Phone/name/email are not verified beyond basic format checks.
 - SMS is off by default and only sent alongside the email, never instead of
-  it — there's no way to book without providing an email today, since
-  Stripe Checkout requires one.
+  it — there's no way to book without providing an email today, the booking
+  form requires one for both payment options.
+- The card processing fee is an estimate (Stripe's standard published rate);
+  it isn't recalculated from Stripe's actual per-charge fee, so on some card
+  types (Amex, international) you may net a few cents less than $20/rider.

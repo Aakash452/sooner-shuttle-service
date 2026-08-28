@@ -13,11 +13,16 @@ interface BookingItem {
   amountCents: number;
   status: "pending" | "paid" | "cancelled" | "expired";
   paymentStatus: "unpaid" | "paid" | "paid_manual" | "refunded";
+  paymentMethod: "card" | "cash";
   createdAt: string;
   paidAt: string | null;
   confirmationSentAt: string | null;
   smsSentAt: string | null;
   notifyLastError: string | null;
+}
+
+function isCollected(b: BookingItem): boolean {
+  return b.paymentStatus === "paid" || b.paymentStatus === "paid_manual";
 }
 
 interface SlotGroup {
@@ -33,12 +38,14 @@ interface SlotGroup {
   booked: number;
   remaining: number;
   revenueCents: number;
+  cashDueCents: number;
   bookings: BookingItem[];
 }
 
 interface BookingsResponse {
   bySlot: SlotGroup[];
   totalRevenueCents: number;
+  totalCashDueCents: number;
   totalRidersBooked: number;
 }
 
@@ -46,8 +53,23 @@ function money(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
-function statusBadge(status: BookingItem["status"], paymentStatus: BookingItem["paymentStatus"]) {
+function statusBadge(b: BookingItem) {
+  const { status, paymentStatus, paymentMethod } = b;
   if (status === "paid") {
+    if (paymentMethod === "cash") {
+      if (paymentStatus === "unpaid") {
+        return (
+          <span className="inline-flex items-center rounded-full bg-gold/15 text-gold px-2 py-0.5 text-xs font-medium">
+            Cash due
+          </span>
+        );
+      }
+      return (
+        <span className="inline-flex items-center rounded-full bg-emerald-500/15 text-emerald-400 px-2 py-0.5 text-xs font-medium">
+          Cash collected
+        </span>
+      );
+    }
     return (
       <span className="inline-flex items-center rounded-full bg-emerald-500/15 text-emerald-400 px-2 py-0.5 text-xs font-medium">
         {paymentStatus === "paid_manual" ? "Paid (manual)" : "Paid"}
@@ -198,20 +220,28 @@ export default function DashboardClient() {
         <p className="text-zinc-400">Loading…</p>
       ) : (
         <>
-          <div className="grid grid-cols-2 sm:grid-cols-2 gap-3 mb-6">
+          <div className="grid grid-cols-3 gap-3 mb-6">
             <div className="bg-ink-card border border-ink-line rounded-2xl p-4">
               <p className="text-xs uppercase tracking-wide text-zinc-500 mb-1">
-                Total revenue
+                Revenue collected
               </p>
-              <p className="font-display text-3xl font-bold text-gold">
+              <p className="font-display text-2xl sm:text-3xl font-bold text-gold">
                 {money(data.totalRevenueCents)}
+              </p>
+            </div>
+            <div className="bg-ink-card border border-ink-line rounded-2xl p-4">
+              <p className="text-xs uppercase tracking-wide text-zinc-500 mb-1">
+                Cash due
+              </p>
+              <p className="font-display text-2xl sm:text-3xl font-bold">
+                {money(data.totalCashDueCents)}
               </p>
             </div>
             <div className="bg-ink-card border border-ink-line rounded-2xl p-4">
               <p className="text-xs uppercase tracking-wide text-zinc-500 mb-1">
                 Riders booked
               </p>
-              <p className="font-display text-3xl font-bold">{data.totalRidersBooked}</p>
+              <p className="font-display text-2xl sm:text-3xl font-bold">{data.totalRidersBooked}</p>
             </div>
           </div>
 
@@ -234,7 +264,8 @@ export default function DashboardClient() {
                       {group.capacity} seats
                     </p>
                     <p className="text-xs text-zinc-500">
-                      {group.remaining} remaining · {money(group.revenueCents)} revenue
+                      {group.remaining} remaining · {money(group.revenueCents)} collected
+                      {group.cashDueCents > 0 && <> · {money(group.cashDueCents)} cash due</>}
                     </p>
                   </div>
                 </div>
@@ -250,6 +281,7 @@ export default function DashboardClient() {
                           <th className="px-4 py-2 font-medium">Name</th>
                           <th className="px-4 py-2 font-medium">Phone</th>
                           <th className="px-4 py-2 font-medium">Email</th>
+                          <th className="px-4 py-2 font-medium">Method</th>
                           <th className="px-4 py-2 font-medium">Riders</th>
                           <th className="px-4 py-2 font-medium">Amount</th>
                           <th className="px-4 py-2 font-medium">Status</th>
@@ -271,10 +303,13 @@ export default function DashboardClient() {
                             <td className="px-4 py-2.5 whitespace-nowrap text-zinc-300">
                               {b.email || <span className="text-zinc-600">—</span>}
                             </td>
+                            <td className="px-4 py-2.5 whitespace-nowrap text-zinc-400 capitalize">
+                              {b.paymentMethod}
+                            </td>
                             <td className="px-4 py-2.5">{b.riders}</td>
                             <td className="px-4 py-2.5 whitespace-nowrap">{money(b.amountCents)}</td>
                             <td className="px-4 py-2.5 whitespace-nowrap">
-                              {statusBadge(b.status, b.paymentStatus)}
+                              {statusBadge(b)}
                               {notificationNote(b)}
                             </td>
                             <td className="px-4 py-2.5">
@@ -289,13 +324,13 @@ export default function DashboardClient() {
                                     Resend code
                                   </button>
                                 )}
-                                {b.status !== "paid" && (
+                                {!isCollected(b) && b.status !== "cancelled" && (
                                   <button
                                     onClick={() => handleMarkPaid(b.id)}
                                     disabled={busyId === b.id}
                                     className="text-xs rounded-md bg-gold/15 text-gold px-2.5 py-1.5 hover:bg-gold/25 disabled:opacity-50 whitespace-nowrap"
                                   >
-                                    Mark paid
+                                    {b.paymentMethod === "cash" ? "Mark cash collected" : "Mark paid"}
                                   </button>
                                 )}
                                 {b.status !== "cancelled" && (

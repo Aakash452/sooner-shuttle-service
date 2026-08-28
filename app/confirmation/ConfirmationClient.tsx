@@ -10,6 +10,8 @@ interface ConfirmedBooking {
   phone: string;
   riders: number;
   amount: number;
+  paymentMethod: "card" | "cash";
+  cashCollected: boolean;
   slot: {
     direction: string;
     label: string;
@@ -25,13 +27,14 @@ const MAX_POLLS = 15; // ~30s of polling if the webhook lags behind the redirect
 export default function ConfirmationClient() {
   const searchParams = useSearchParams();
   const sessionId = searchParams.get("session_id");
+  const code = searchParams.get("code");
 
   const [phase, setPhase] = useState<Phase>("loading");
   const [booking, setBooking] = useState<ConfirmedBooking | null>(null);
   const pollCount = useRef(0);
 
   useEffect(() => {
-    if (!sessionId) {
+    if (!sessionId && !code) {
       setPhase("error");
       return;
     }
@@ -39,11 +42,13 @@ export default function ConfirmationClient() {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
 
+    const query = code
+      ? `code=${encodeURIComponent(code)}`
+      : `session_id=${encodeURIComponent(sessionId!)}`;
+
     async function poll() {
       try {
-        const res = await fetch(`/api/confirm?session_id=${encodeURIComponent(sessionId!)}`, {
-          cache: "no-store",
-        });
+        const res = await fetch(`/api/confirm?${query}`, { cache: "no-store" });
         const data = await res.json();
         if (cancelled) return;
 
@@ -60,6 +65,13 @@ export default function ConfirmationClient() {
 
         if (data.status === "cancelled" || data.status === "expired") {
           setPhase("failed");
+          return;
+        }
+
+        // A cash reservation is confirmed synchronously, so there's nothing
+        // to poll for — only the card flow waits on the Stripe webhook.
+        if (code) {
+          setPhase("error");
           return;
         }
 
@@ -81,7 +93,7 @@ export default function ConfirmationClient() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [sessionId]);
+  }, [sessionId, code]);
 
   return (
     <main className="min-h-screen flex items-center justify-center px-4 py-10">
@@ -89,7 +101,7 @@ export default function ConfirmationClient() {
         {phase === "loading" && (
           <div className="text-center">
             <div className="mx-auto mb-4 h-10 w-10 rounded-full border-2 border-gold border-t-transparent animate-spin" />
-            <p className="text-zinc-300">Confirming your payment…</p>
+            <p className="text-zinc-300">Confirming your {code ? "reservation" : "payment"}…</p>
           </div>
         )}
 
@@ -133,10 +145,20 @@ export default function ConfirmationClient() {
                 <dd>{booking.riders}</dd>
               </div>
               <div className="flex justify-between">
-                <dt className="text-zinc-500">Amount paid</dt>
+                <dt className="text-zinc-500">
+                  {booking.paymentMethod === "cash" && !booking.cashCollected
+                    ? "Amount due (cash)"
+                    : "Amount paid"}
+                </dt>
                 <dd className="font-semibold">${booking.amount.toFixed(2)}</dd>
               </div>
             </dl>
+
+            {booking.paymentMethod === "cash" && !booking.cashCollected && (
+              <p className="mt-4 rounded-lg bg-gold/10 border border-gold/30 text-gold text-sm px-4 py-3">
+                Please have exact cash ready — pay the driver when you board.
+              </p>
+            )}
 
             <Link
               href="/"
@@ -177,8 +199,8 @@ export default function ConfirmationClient() {
           <div className="bg-ink-card border border-ink-line rounded-2xl p-6 text-center">
             <h1 className="font-display text-2xl font-bold mb-2">Couldn&apos;t load booking</h1>
             <p className="text-zinc-400 text-sm mb-4">
-              We couldn&apos;t find that checkout session. If you completed payment, check for a
-              receipt email from Stripe, or contact us directly.
+              We couldn&apos;t find that booking. If you completed payment or a reservation,
+              check for a confirmation email, or contact us directly.
             </p>
             <Link
               href="/"

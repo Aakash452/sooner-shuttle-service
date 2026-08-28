@@ -41,6 +41,10 @@ function buildDb(): Database.Database {
       slot_id TEXT NOT NULL,
       riders INTEGER NOT NULL,
       amount_cents INTEGER NOT NULL,
+      -- 'paid' means the seat is confirmed/held, NOT necessarily that money
+      -- has changed hands yet — a cash booking goes straight to 'paid' at
+      -- reservation time so it holds its seat, while payment_status tracks
+      -- whether the cash has actually been collected (see payment_method).
       status TEXT NOT NULL DEFAULT 'pending', -- pending | paid | cancelled | expired
       payment_status TEXT NOT NULL DEFAULT 'unpaid', -- unpaid | paid | paid_manual | refunded
       stripe_session_id TEXT,
@@ -60,6 +64,10 @@ function buildDb(): Database.Database {
   ensureColumn(db, "bookings", "confirmation_sent_at", "confirmation_sent_at TEXT");
   ensureColumn(db, "bookings", "sms_sent_at", "sms_sent_at TEXT");
   ensureColumn(db, "bookings", "notify_last_error", "notify_last_error TEXT");
+
+  // Added for the cash-on-board payment option: which rail a booking went
+  // through. Existing rows all came through Stripe, hence the 'card' default.
+  ensureColumn(db, "bookings", "payment_method", "payment_method TEXT NOT NULL DEFAULT 'card'");
 
   return db;
 }
@@ -94,6 +102,7 @@ export interface BookingRow {
   confirmation_sent_at: string | null;
   sms_sent_at: string | null;
   notify_last_error: string | null;
+  payment_method: "card" | "cash";
 }
 
 /** Riders currently holding a seat for a slot: paid, or pending within the hold window. */
@@ -146,6 +155,7 @@ export function createPendingBooking(params: {
   slotId: string;
   name: string;
   phone: string;
+  email: string;
   riders: number;
   amountCents: number;
 }): BookingRow {
@@ -165,10 +175,48 @@ export function createPendingBooking(params: {
     const info = db
       .prepare(
         `INSERT INTO bookings
-          (booking_code, name, phone, slot_id, riders, amount_cents, status, payment_status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'pending', 'unpaid', ?)`
+          (booking_code, name, phone, email, slot_id, riders, amount_cents, status, payment_status, payment_method, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'unpaid', 'card', ?)`
       )
-      .run(code, params.name, params.phone, params.slotId, params.riders, params.amountCents, now);
+      .run(code, params.name, params.phone, params.email, params.slotId, params.riders, params.amountCents, now);
+    return db.prepare("SELECT * FROM bookings WHERE id = ?").get(info.lastInsertRowid) as BookingRow;
+  });
+  return insert();
+}
+
+/**
+ * Reserves a seat to be paid in cash on board. Unlike the card flow there's
+ * no external payment step to wait on, so this goes straight to a
+ * confirmed ('paid') status — it holds the seat immediately — with
+ * payment_status left 'unpaid' until an admin marks the cash collected.
+ */
+export function createCashBooking(params: {
+  slotId: string;
+  name: string;
+  phone: string;
+  email: string;
+  riders: number;
+  amountCents: number;
+}): BookingRow {
+  const db = getDb();
+  const insert = db.transaction(() => {
+    const booked = ridersBookedForSlot(params.slotId);
+    const remaining = MAX_RIDERS_PER_SLOT - booked;
+    if (params.riders > remaining) {
+      throw new NotEnoughSeatsError(Math.max(0, remaining));
+    }
+    let code = generateCode();
+    while (db.prepare("SELECT 1 FROM bookings WHERE booking_code = ?").get(code)) {
+      code = generateCode();
+    }
+    const now = new Date().toISOString();
+    const info = db
+      .prepare(
+        `INSERT INTO bookings
+          (booking_code, name, phone, email, slot_id, riders, amount_cents, status, payment_status, payment_method, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'paid', 'unpaid', 'cash', ?)`
+      )
+      .run(code, params.name, params.phone, params.email, params.slotId, params.riders, params.amountCents, now);
     return db.prepare("SELECT * FROM bookings WHERE id = ?").get(info.lastInsertRowid) as BookingRow;
   });
   return insert();

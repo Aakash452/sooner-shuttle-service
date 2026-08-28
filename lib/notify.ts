@@ -25,12 +25,15 @@ function bookingContent(booking: BookingRow) {
   const slotLabel = slot ? `${directionLabel(slot.direction)} — ${slot.label}` : booking.slot_id;
   const route = slot ? `${slot.from} → ${slot.to}` : "";
   const amount = (booking.amount_cents / 100).toFixed(2);
-  return { slot, slotLabel, route, amount };
+  const isCash = booking.payment_method === "cash";
+  const amountLabel = isCash ? "Amount due (cash)" : "Amount paid";
+  return { slot, slotLabel, route, amount, isCash, amountLabel };
 }
 
 function buildEmail(booking: BookingRow) {
-  const { slotLabel, route, amount } = bookingContent(booking);
+  const { slotLabel, route, amount, isCash, amountLabel } = bookingContent(booking);
   const subject = `Your Sooner Shuttle booking code: ${booking.booking_code}`;
+  const cashNote = isCash ? "Please have exact cash ready — pay the driver when you board." : "";
   const text = [
     "You're booked!",
     "",
@@ -38,10 +41,13 @@ function buildEmail(booking: BookingRow) {
     `Trip: ${slotLabel}`,
     `Route: ${route}`,
     `Riders: ${booking.riders}`,
-    `Amount paid: $${amount}`,
+    `${amountLabel}: $${amount}`,
     "",
+    isCash ? cashNote : "",
     "Show this code when you board. See you at the shuttle!",
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
   const html = `
     <div style="font-family: -apple-system, sans-serif; max-width: 480px; margin: 0 auto; color: #111;">
       <p style="color: #841617; font-weight: bold; letter-spacing: 0.08em; text-transform: uppercase; font-size: 12px; margin-bottom: 4px;">
@@ -55,8 +61,9 @@ function buildEmail(booking: BookingRow) {
         <tr><td style="color: #666; padding: 4px 0;">Trip</td><td style="text-align: right;">${slotLabel}</td></tr>
         <tr><td style="color: #666; padding: 4px 0;">Route</td><td style="text-align: right;">${route}</td></tr>
         <tr><td style="color: #666; padding: 4px 0;">Riders</td><td style="text-align: right;">${booking.riders}</td></tr>
-        <tr><td style="color: #666; padding: 4px 0;">Amount paid</td><td style="text-align: right; font-weight: bold;">$${amount}</td></tr>
+        <tr><td style="color: #666; padding: 4px 0;">${amountLabel}</td><td style="text-align: right; font-weight: bold;">$${amount}</td></tr>
       </table>
+      ${isCash ? `<p style="color: #841617; font-size: 13px; margin-top: 16px; font-weight: bold;">${cashNote}</p>` : ""}
       <p style="color: #666; font-size: 12px; margin-top: 24px;">
         Show this code when you board. See you at the shuttle!
       </p>
@@ -91,8 +98,9 @@ export async function sendBookingConfirmationSms(booking: BookingRow): Promise<S
     return { ok: false, error: "Twilio env vars are not fully configured" };
   }
 
-  const { slotLabel, amount } = bookingContent(booking);
-  const body = `Sooner Shuttle: you're booked! Code ${booking.booking_code} — ${slotLabel}, ${booking.riders} rider(s), $${amount} paid. Show this code to board.`;
+  const { slotLabel, amount, isCash } = bookingContent(booking);
+  const moneyPhrase = isCash ? `$${amount} due in cash` : `$${amount} paid`;
+  const body = `Sooner Shuttle: you're booked! Code ${booking.booking_code} — ${slotLabel}, ${booking.riders} rider(s), ${moneyPhrase}. Show this code to board.`;
 
   try {
     const auth = Buffer.from(`${sid}:${token}`).toString("base64");

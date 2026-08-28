@@ -8,6 +8,8 @@ import {
   PICKUP_ADDRESS,
   PRICE_PER_RIDER_CENTS,
 } from "@/lib/slots";
+import { cardTotalCents, type PaymentMethod } from "@/lib/pricing";
+import { isValidEmail } from "@/lib/validate";
 
 interface SlotAvailability {
   id: string;
@@ -37,7 +39,9 @@ export default function BookingClient() {
   const [selectedSlot, setSelectedSlot] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
   const [riders, setRiders] = useState(1);
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -76,19 +80,57 @@ export default function BookingClient() {
     setRiders(1);
   }
 
-  const totalCents = riders * PRICE_PER_RIDER_CENTS;
+  const netCents = riders * PRICE_PER_RIDER_CENTS;
+  const cardTotal = cardTotalCents(netCents);
+  const totalCents = paymentMethod === "card" ? cardTotal : netCents;
+
   const canSubmit =
-    !!selected && !selected.soldOut && name.trim().length > 0 && phone.trim().length >= 7 && riders >= 1;
+    !!selected &&
+    !selected.soldOut &&
+    name.trim().length > 0 &&
+    phone.trim().length >= 7 &&
+    isValidEmail(email.trim()) &&
+    riders >= 1 &&
+    !!paymentMethod;
 
   async function handleReserve() {
-    if (!selected || !canSubmit) return;
+    if (!selected || !canSubmit || !paymentMethod) return;
     setSubmitting(true);
     setSubmitError(null);
     try {
+      if (paymentMethod === "cash") {
+        const res = await fetch("/api/reserve-cash", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            slotId: selected.id,
+            name: name.trim(),
+            phone: phone.trim(),
+            email: email.trim(),
+            riders,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setSubmitError(data.error || "Something went wrong. Please try again.");
+          loadAvailability();
+          setSubmitting(false);
+          return;
+        }
+        window.location.href = `/confirmation?code=${encodeURIComponent(data.bookingCode)}`;
+        return;
+      }
+
       const res = await fetch("/api/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slotId: selected.id, name: name.trim(), phone: phone.trim(), riders }),
+        body: JSON.stringify({
+          slotId: selected.id,
+          name: name.trim(),
+          phone: phone.trim(),
+          email: email.trim(),
+          riders,
+        }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -203,6 +245,20 @@ export default function BookingClient() {
             />
           </div>
           <div>
+            <label className="block text-sm text-zinc-400 mb-1" htmlFor="email">
+              Email (for your booking code)
+            </label>
+            <input
+              id="email"
+              type="email"
+              inputMode="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="jane@example.com"
+              className="w-full rounded-lg bg-ink border border-ink-line px-3 py-2.5 text-base focus:outline-none focus:ring-2 focus:ring-crimson"
+            />
+          </div>
+          <div>
             <label className="block text-sm text-zinc-400 mb-1">Riders</label>
             <div className="flex items-center gap-4">
               <button
@@ -236,9 +292,47 @@ export default function BookingClient() {
             <p className="text-sm text-zinc-500">Select a trip above to continue.</p>
           )}
 
+          <div>
+            <label className="block text-sm text-zinc-400 mb-2">How will you pay?</label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setPaymentMethod("cash")}
+                className={[
+                  "rounded-xl border px-3 py-3 text-left transition-colors",
+                  paymentMethod === "cash"
+                    ? "border-gold bg-gold/10 shadow-goldglow"
+                    : "border-ink-line bg-ink hover:border-crimson-light",
+                ].join(" ")}
+              >
+                <p className="font-display font-semibold text-sm">Pay Cash on Board</p>
+                <p className="text-xs text-zinc-500 mt-1">Pay the driver when you board</p>
+                <p className="font-display text-lg font-bold mt-2">{money(netCents)}</p>
+              </button>
+              <button
+                type="button"
+                onClick={() => setPaymentMethod("card")}
+                className={[
+                  "rounded-xl border px-3 py-3 text-left transition-colors",
+                  paymentMethod === "card"
+                    ? "border-gold bg-gold/10 shadow-goldglow"
+                    : "border-ink-line bg-ink hover:border-crimson-light",
+                ].join(" ")}
+              >
+                <p className="font-display font-semibold text-sm">Pay by Card Now</p>
+                <p className="text-xs text-zinc-500 mt-1">
+                  ${PRICE_DOLLARS}/rider + processing fee
+                </p>
+                <p className="font-display text-lg font-bold mt-2">{money(cardTotal)}</p>
+              </button>
+            </div>
+          </div>
+
           <div className="pt-2 border-t border-ink-line flex items-center justify-between">
             <span className="text-sm text-zinc-400">
-              ${PRICE_DOLLARS} × {riders} rider{riders > 1 ? "s" : ""}
+              {paymentMethod === "card"
+                ? `$${PRICE_DOLLARS} × ${riders} rider${riders > 1 ? "s" : ""} + card fee`
+                : `$${PRICE_DOLLARS} × ${riders} rider${riders > 1 ? "s" : ""}`}
             </span>
             <span className="font-display text-xl font-bold">{money(totalCents)}</span>
           </div>
@@ -263,7 +357,13 @@ export default function BookingClient() {
             disabled={!canSubmit || submitting}
             className="flex-1 rounded-xl bg-crimson hover:bg-crimson-light disabled:opacity-40 disabled:cursor-not-allowed text-white font-display font-semibold tracking-wide py-3.5 text-base transition-colors shadow-goldglow"
           >
-            {submitting ? "Redirecting to payment…" : "Reserve & Pay"}
+            {submitting
+              ? paymentMethod === "cash"
+                ? "Reserving your seat…"
+                : "Redirecting to payment…"
+              : paymentMethod === "cash"
+              ? "Reserve Seat — Pay Cash"
+              : "Reserve & Pay"}
           </button>
         </div>
       </div>

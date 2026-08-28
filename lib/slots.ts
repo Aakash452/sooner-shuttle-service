@@ -10,7 +10,7 @@ export interface SlotDef {
 
 export const VAN_CAPACITY_TOTAL = 15; // includes driver
 export const MAX_RIDERS_PER_SLOT = VAN_CAPACITY_TOTAL - 1; // 14 paying riders
-export const PRICE_PER_RIDER_CENTS = 2500; // $25.00
+export const PRICE_PER_RIDER_CENTS = 2000; // $20.00 — what the organizer nets per rider either way
 
 export const PICKUP_ADDRESS = "770 Copperfield Dr, Norman, OK 73072";
 export const DROPOFF_ADDRESS = "900 College Ave, Norman, OK 73072";
