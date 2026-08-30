@@ -4,7 +4,7 @@ A production booking platform for game-day shuttle rides at the University of Ok
 
 **Built to solve a real problem:** On OU game days, thousands of fans need rides between motels and campus. This app runs a 15-seat van operation with real payments, real seat inventory, and zero overbooking — not a demo, not a prototype.
 
-🔗 **Live at:** _(your deployed URL here)_
+🔗 **Live at:** _(https://sooner-shuttle-service-production.up.railway.app/)_
 
 ---
 
