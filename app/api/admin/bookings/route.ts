@@ -7,9 +7,14 @@ export const dynamic = "force-dynamic";
 
 // Money actually collected — as opposed to `status === 'paid'`, which just
 // means the seat is confirmed/held (true immediately for a cash booking,
-// before any cash has changed hands).
+// before any cash has changed hands). Excludes cancelled bookings: this
+// app never issues an automatic refund, but a cancelled booking shouldn't
+// keep inflating the revenue total shown to the admin.
 function isCollected(b: BookingRow): boolean {
-  return b.payment_status === "paid" || b.payment_status === "paid_manual";
+  return (
+    b.status !== "cancelled" &&
+    (b.payment_status === "paid" || b.payment_status === "paid_manual")
+  );
 }
 
 function isCashDue(b: BookingRow): boolean {
