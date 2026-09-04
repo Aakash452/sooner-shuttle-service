@@ -1,4 +1,5 @@
 import nodemailer, { type Transporter } from "nodemailer";
+import type SMTPTransport from "nodemailer/lib/smtp-transport";
 import {
   BookingRow,
   markConfirmationSent,
@@ -16,9 +17,20 @@ function getTransporter(): Transporter {
     throw new Error("GMAIL_USER / GMAIL_APP_PASSWORD are not set in the environment");
   }
   _transporter = nodemailer.createTransport({
-    service: "gmail",
+    // Explicit host/port (587 + STARTTLS) instead of the "service: gmail"
+    // shorthand (which defaults to port 465/SSL) — some hosts (Railway
+    // included) have flaky/blocked egress on 465 or route outbound SMTP over
+    // IPv6 paths that time out to Gmail. Forcing IPv4 + 587 is the
+    // combination that actually connects reliably from inside those
+    // containers. `family` isn't in @types/nodemailer's Options but is
+    // accepted at runtime (forwarded to Node's net/tls connect).
+    host: "smtp.gmail.com",
+    port: 587,
+    secure: false,
+    requireTLS: true,
+    family: 4,
     auth: { user, pass },
-  });
+  } as SMTPTransport.Options & { family: number });
   return _transporter;
 }
 
