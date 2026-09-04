@@ -1,5 +1,3 @@
-import nodemailer, { type Transporter } from "nodemailer";
-import type SMTPTransport from "nodemailer/lib/smtp-transport";
 import {
   BookingRow,
   markConfirmationSent,
@@ -8,30 +6,96 @@ import {
 } from "./db";
 import { getSlotById, directionLabel } from "./slots";
 
-let _transporter: Transporter | null = null;
-function getTransporter(): Transporter {
-  if (_transporter) return _transporter;
-  const user = process.env.GMAIL_USER;
-  const pass = process.env.GMAIL_APP_PASSWORD;
-  if (!user || !pass) {
-    throw new Error("GMAIL_USER / GMAIL_APP_PASSWORD are not set in the environment");
+// Gmail over raw SMTP (ports 465/587) times out from inside Railway's
+// network — a common cloud-host restriction — so email sends through
+// Gmail's REST API over HTTPS instead (port 443, never blocked), using an
+// OAuth2 refresh token instead of an app password.
+
+function b64url(input: string): string {
+  return Buffer.from(input, "utf-8")
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+function encodeHeader(text: string): string {
+  // RFC 2047 encoded-word, so non-ASCII subjects (em dashes, etc) survive.
+  return `=?UTF-8?B?${Buffer.from(text, "utf-8").toString("base64")}?=`;
+}
+
+async function getGmailAccessToken(): Promise<string> {
+  const clientId = process.env.GMAIL_CLIENT_ID;
+  const clientSecret = process.env.GMAIL_CLIENT_SECRET;
+  const refreshToken = process.env.GMAIL_REFRESH_TOKEN;
+  if (!clientId || !clientSecret || !refreshToken) {
+    throw new Error("GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET / GMAIL_REFRESH_TOKEN are not set");
   }
-  _transporter = nodemailer.createTransport({
-    // Explicit host/port (587 + STARTTLS) instead of the "service: gmail"
-    // shorthand (which defaults to port 465/SSL) — some hosts (Railway
-    // included) have flaky/blocked egress on 465 or route outbound SMTP over
-    // IPv6 paths that time out to Gmail. Forcing IPv4 + 587 is the
-    // combination that actually connects reliably from inside those
-    // containers. `family` isn't in @types/nodemailer's Options but is
-    // accepted at runtime (forwarded to Node's net/tls connect).
-    host: "smtp.gmail.com",
-    port: 587,
-    secure: false,
-    requireTLS: true,
-    family: 4,
-    auth: { user, pass },
-  } as SMTPTransport.Options & { family: number });
-  return _transporter;
+  const res = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: refreshToken,
+      grant_type: "refresh_token",
+    }).toString(),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`Gmail token refresh failed (${res.status}): ${detail.slice(0, 300)}`);
+  }
+  const data = (await res.json()) as { access_token?: string };
+  if (!data.access_token) throw new Error("Gmail token refresh returned no access_token");
+  return data.access_token;
+}
+
+/** Sends a MIME email via the Gmail API. `from` must be the authenticated
+ * account (GMAIL_USER) — the Gmail API won't let a regular account send as
+ * a different address, only the display name is customizable. */
+async function sendViaGmailApi(params: {
+  from: string;
+  to: string;
+  subject: string;
+  text: string;
+  html: string;
+}) {
+  const accessToken = await getGmailAccessToken();
+  const boundary = "sooner-shuttle-boundary";
+  const message = [
+    `From: ${params.from}`,
+    `To: ${params.to}`,
+    `Subject: ${encodeHeader(params.subject)}`,
+    "MIME-Version: 1.0",
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
+    "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: base64",
+    "",
+    Buffer.from(params.text, "utf-8").toString("base64"),
+    "",
+    `--${boundary}`,
+    "Content-Type: text/html; charset=UTF-8",
+    "Content-Transfer-Encoding: base64",
+    "",
+    Buffer.from(params.html, "utf-8").toString("base64"),
+    "",
+    `--${boundary}--`,
+  ].join("\r\n");
+
+  const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ raw: b64url(message) }),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`Gmail API send failed (${res.status}): ${detail.slice(0, 300)}`);
+  }
 }
 
 type SendOutcome = { ok: true } | { ok: false; error: string };
@@ -95,8 +159,7 @@ export async function sendBookingConfirmationEmail(booking: BookingRow): Promise
 
   try {
     const { subject, text, html } = buildEmail(booking);
-    const transporter = getTransporter();
-    await transporter.sendMail({
+    await sendViaGmailApi({
       from: `"Sooner Shuttle Service" <${user}>`,
       to,
       subject,

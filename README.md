@@ -14,7 +14,7 @@ A production booking platform for game-day shuttle rides at the University of Ok
 - **Dual payment flow** — Riders choose cash (confirmed instantly, collected by the driver) or card (Stripe Checkout with webhook-driven confirmation). The organizer nets exactly $20/rider either way — card bookings are grossed up to absorb Stripe's processing fee.
 - **Webhook-driven architecture** — Card bookings aren't confirmed by the frontend. The only path from "pending" to "paid" is Stripe's `checkout.session.completed` webhook, making the system tamper-proof.
 - **Admin dashboard** — Real-time view of every slot: seats booked vs remaining, revenue collected vs cash outstanding, with controls to cancel bookings, mark cash collected, and resend confirmation codes.
-- **Email & SMS notifications** — Booking codes sent via Gmail SMTP (Nodemailer) and optionally Twilio (SMS), with delivery tracking per booking and one-click resend from admin.
+- **Email & SMS notifications** — Booking codes sent via the Gmail API (HTTPS, not SMTP — SMTP times out on Railway) and optionally Twilio (SMS), with delivery tracking per booking and one-click resend from admin.
 
 ---
 
@@ -26,7 +26,7 @@ A production booking platform for game-day shuttle rides at the University of Ok
 | Styling | Tailwind CSS |
 | Database | SQLite via `better-sqlite3` |
 | Payments | Stripe Checkout + Webhooks |
-| Email | Gmail SMTP (Nodemailer) |
+| Email | Gmail API (OAuth2, over HTTPS) |
 | SMS (optional) | Twilio |
 | Hosting | Railway (persistent disk) |
 
@@ -65,21 +65,31 @@ Fill in:
 | `ADMIN_SESSION_SECRET` | A long random string — generate with `openssl rand -hex 32`. |
 | `NEXT_PUBLIC_EVENT_DATE_LABEL` | Displayed at the top of the page, e.g. `"Saturday, Sept 5, 2026"`. |
 | `NEXT_PUBLIC_SITE_URL` | Your deployed URL (Stripe redirects here). Use `http://localhost:3000` for local dev. |
-| `GMAIL_USER` | See [Gmail SMTP setup](#1a-set-up-gmail-smtp-booking-code-email). |
-| `GMAIL_APP_PASSWORD` | 16-character App Password for that Gmail account (not your normal password). |
+| `GMAIL_USER` | See [Gmail setup](#1a-set-up-gmail-booking-code-email). |
+| `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET` / `GMAIL_REFRESH_TOKEN` | OAuth2 credentials for that Gmail account — see below. |
 | `ENABLE_SMS` | Set to `true` to enable Twilio SMS (off by default). |
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_FROM` | Optional — see [Twilio setup](#1b-optional-text-the-code-via-twilio). |
 
-#### 1a. Set up Gmail SMTP (booking-code email)
+#### 1a. Set up Gmail (booking-code email)
 
-Emails send through Nodemailer over Gmail's SMTP, using the Gmail account
-you point it at:
+Emails send through the **Gmail REST API over HTTPS**, not SMTP — raw SMTP
+(ports 465/587) times out from inside most cloud hosts (Railway included),
+either blocked by the platform or silently dropped by Gmail as anti-spam
+protection for cloud-provider IP ranges. The API call goes over port 443
+like any other HTTPS request, so it isn't affected. This means an app
+password (Gmail SMTP's usual auth) won't work here — you need an OAuth2
+refresh token instead:
 
-1. Turn on **2-Step Verification** on the Gmail account you want to send from, if it isn't already: [myaccount.google.com/security](https://myaccount.google.com/security).
-2. Generate an **App Password**: Google Account → Security → 2-Step Verification → **App passwords**. Create one (any name, e.g. "Sooner Shuttle") — Google gives you a 16-character password. Your normal Gmail password won't work for SMTP.
-3. Set `GMAIL_USER` to that Gmail address, and `GMAIL_APP_PASSWORD` to the 16-character app password (spaces are fine either way).
+1. Go to [console.cloud.google.com](https://console.cloud.google.com), sign in as the Gmail account you want to send from, and create a project.
+2. **Enable the Gmail API**: search "Gmail API" in the top search bar → open it → **Enable**.
+3. **Configure the OAuth consent screen** (APIs & Services → OAuth consent screen): choose **External**, fill in the required fields, and on the "Test users" step add the Gmail account itself. Leaving it in "Testing" publishing status is fine — no Google review needed.
+4. **Create credentials** (APIs & Services → Credentials → Create Credentials → OAuth client ID): Application type **Web application**, and under "Authorized redirect URIs" add exactly `https://developers.google.com/oauthplayground`. Copy the **Client ID** and **Client Secret**.
+5. Go to [developers.google.com/oauthplayground](https://developers.google.com/oauthplayground) → gear icon (top right) → check **"Use your own OAuth credentials"** → paste in the Client ID + Secret from step 4.
+6. In the left panel find **Gmail API v1**, check the scope `https://www.googleapis.com/auth/gmail.send` → **Authorize APIs** → sign in as that Gmail account and allow access.
+7. Click **Exchange authorization code for tokens** → copy the **Refresh token**.
+8. Set `GMAIL_USER` to the Gmail address, `GMAIL_CLIENT_ID`/`GMAIL_CLIENT_SECRET` from step 4, and `GMAIL_REFRESH_TOKEN` from step 7.
 
-Emails send as `"Sooner Shuttle Service" <GMAIL_USER>`. Gmail's SMTP has a sending-volume limit (roughly 500/day on a normal account) — plenty for a one-day event, but not something to build a bigger product on.
+Emails send as `"Sooner Shuttle Service" <GMAIL_USER>` — the Gmail API only lets an account send as itself (display name is customizable, the address isn't). Refresh tokens don't expire from normal use, so this is a one-time setup. Gmail has a sending-volume limit (roughly 500/day on a normal account) — plenty for a one-day event, but not something to build a bigger product on.
 
 Stripe Checkout collects the rider's email automatically — no additional configuration needed.
 
