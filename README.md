@@ -16,8 +16,8 @@ Trips (each a separate 14-seat hold):
 | Return to motel | 10:30 PM, 12:00 AM |
 
 Stack: Next.js 16 (App Router) + Tailwind, SQLite (`better-sqlite3`) for the
-`bookings` table, Stripe Checkout for payment, Resend for the booking-code
-confirmation email (optional Twilio SMS).
+`bookings` table, Stripe Checkout for payment, Gmail SMTP via Nodemailer for
+the booking-code confirmation email (optional Twilio SMS).
 
 ## 1. Configure environment variables
 
@@ -33,21 +33,26 @@ Fill in:
 - `ADMIN_SESSION_SECRET` — a long random string, e.g. `openssl rand -hex 32`.
 - `NEXT_PUBLIC_EVENT_DATE_LABEL` — shown at the top of the page, e.g. `"Saturday, Sept 5, 2026"`.
 - `NEXT_PUBLIC_SITE_URL` — your real deployed URL (Stripe redirects back here). Keep as `http://localhost:3000` for local dev.
-- `RESEND_API_KEY` / `RESEND_FROM_EMAIL` — see step 1a below.
+- `GMAIL_USER` / `GMAIL_APP_PASSWORD` — see step 1a below.
 - `ENABLE_SMS`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` — optional, see step 1b.
 
-### 1a. Set up Resend (booking-code email)
+### 1a. Set up Gmail SMTP (booking-code email)
 
-1. Create a free account at [resend.com](https://resend.com).
-2. **Verify a sending domain or address** at
-   [resend.com/domains](https://resend.com/domains) — add the DNS records
-   Resend gives you (SPF/DKIM) at your domain registrar. Until a domain is
-   verified you can only send test emails to your own Resend account email,
-   so this step is required before real riders can receive confirmations.
-3. Create an API key at [resend.com/api-keys](https://resend.com/api-keys)
-   and put it in `RESEND_API_KEY`.
-4. Set `RESEND_FROM_EMAIL` to an address on your verified domain, e.g.
-   `"Sooner Shuttle Service <bookings@yourdomain.com>"`.
+Emails send through Nodemailer over Gmail's SMTP, using the Gmail account
+you point it at:
+
+1. Turn on **2-Step Verification** on the Gmail account you want to send
+   from, if it isn't already: [myaccount.google.com/security](https://myaccount.google.com/security).
+2. Generate an **App Password**: Google Account → Security → 2-Step
+   Verification → **App passwords**. Create one (any name, e.g. "Sooner
+   Shuttle") — Google gives you a 16-character password. This is required;
+   your normal Gmail password won't work for SMTP.
+3. Set `GMAIL_USER` to that Gmail address, and `GMAIL_APP_PASSWORD` to the
+   16-character app password (spaces are fine either way).
+
+Emails are sent as `"Sooner Shuttle Service" <GMAIL_USER>`. Gmail's SMTP
+has a sending-volume limit (roughly 500/day on a normal account) — plenty
+for a one-day event, but not something to build a bigger product on.
 
 Stripe Checkout collects the rider's email automatically (it's a required
 field on the Checkout page) — there's nothing else to configure for that
@@ -163,7 +168,7 @@ per rider no matter which option the rider picks:
 6. Availability shown on the booking page = 14 − (all held/confirmed riders,
    cash or card, + riders currently mid-checkout for that slot), so seats can
    never be oversold regardless of payment method.
-7. Sending the confirmation email (via Resend, plus SMS if `ENABLE_SMS=true`)
+7. Sending the confirmation email (via Gmail SMTP/Nodemailer, plus SMS if `ENABLE_SMS=true`)
    happens once per booking — right away for cash, or on the pending→paid
    webhook transition for card, never resent on a retried/duplicate webhook
    event. A delivery failure is logged and recorded on the booking, but never

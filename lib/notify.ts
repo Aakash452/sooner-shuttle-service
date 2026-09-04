@@ -1,4 +1,4 @@
-import { Resend } from "resend";
+import nodemailer, { type Transporter } from "nodemailer";
 import {
   BookingRow,
   markConfirmationSent,
@@ -7,15 +7,19 @@ import {
 } from "./db";
 import { getSlotById, directionLabel } from "./slots";
 
-let _resend: Resend | null = null;
-function getResend(): Resend {
-  if (_resend) return _resend;
-  const key = process.env.RESEND_API_KEY;
-  if (!key) {
-    throw new Error("RESEND_API_KEY is not set in the environment");
+let _transporter: Transporter | null = null;
+function getTransporter(): Transporter {
+  if (_transporter) return _transporter;
+  const user = process.env.GMAIL_USER;
+  const pass = process.env.GMAIL_APP_PASSWORD;
+  if (!user || !pass) {
+    throw new Error("GMAIL_USER / GMAIL_APP_PASSWORD are not set in the environment");
   }
-  _resend = new Resend(key);
-  return _resend;
+  _transporter = nodemailer.createTransport({
+    service: "gmail",
+    auth: { user, pass },
+  });
+  return _transporter;
 }
 
 type SendOutcome = { ok: true } | { ok: false; error: string };
@@ -74,16 +78,19 @@ function buildEmail(booking: BookingRow) {
 export async function sendBookingConfirmationEmail(booking: BookingRow): Promise<SendOutcome> {
   const to = booking.email;
   if (!to) return { ok: false, error: "No email on file for this booking" };
-  const from = process.env.RESEND_FROM_EMAIL;
-  if (!from) return { ok: false, error: "RESEND_FROM_EMAIL is not configured" };
+  const user = process.env.GMAIL_USER;
+  if (!user) return { ok: false, error: "GMAIL_USER is not configured" };
 
   try {
     const { subject, text, html } = buildEmail(booking);
-    const resend = getResend();
-    const result = await resend.emails.send({ from, to, subject, text, html });
-    if (result.error) {
-      return { ok: false, error: result.error.message || String(result.error) };
-    }
+    const transporter = getTransporter();
+    await transporter.sendMail({
+      from: `"Sooner Shuttle Service" <${user}>`,
+      to,
+      subject,
+      text,
+      html,
+    });
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
