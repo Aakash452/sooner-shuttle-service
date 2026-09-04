@@ -14,7 +14,7 @@ A production booking platform for game-day shuttle rides at the University of Ok
 - **Dual payment flow** — Riders choose cash (confirmed instantly, collected by the driver) or card (Stripe Checkout with webhook-driven confirmation). The organizer nets exactly $20/rider either way — card bookings are grossed up to absorb Stripe's processing fee.
 - **Webhook-driven architecture** — Card bookings aren't confirmed by the frontend. The only path from "pending" to "paid" is Stripe's `checkout.session.completed` webhook, making the system tamper-proof.
 - **Admin dashboard** — Real-time view of every slot: seats booked vs remaining, revenue collected vs cash outstanding, with controls to cancel bookings, mark cash collected, and resend confirmation codes.
-- **Email & SMS notifications** — Booking codes sent via Resend (email) and optionally Twilio (SMS), with delivery tracking per booking and one-click resend from admin.
+- **Email & SMS notifications** — Booking codes sent via Gmail SMTP (Nodemailer) and optionally Twilio (SMS), with delivery tracking per booking and one-click resend from admin.
 
 ---
 
@@ -26,7 +26,7 @@ A production booking platform for game-day shuttle rides at the University of Ok
 | Styling | Tailwind CSS |
 | Database | SQLite via `better-sqlite3` |
 | Payments | Stripe Checkout + Webhooks |
-| Email | Resend |
+| Email | Gmail SMTP (Nodemailer) |
 | SMS (optional) | Twilio |
 | Hosting | Railway (persistent disk) |
 
@@ -65,17 +65,21 @@ Fill in:
 | `ADMIN_SESSION_SECRET` | A long random string — generate with `openssl rand -hex 32`. |
 | `NEXT_PUBLIC_EVENT_DATE_LABEL` | Displayed at the top of the page, e.g. `"Saturday, Sept 5, 2026"`. |
 | `NEXT_PUBLIC_SITE_URL` | Your deployed URL (Stripe redirects here). Use `http://localhost:3000` for local dev. |
-| `RESEND_API_KEY` | See [Resend setup](#1a-set-up-resend-booking-code-email). |
-| `RESEND_FROM_EMAIL` | An address on your verified domain, e.g. `Sooner Shuttle <bookings@yourdomain.com>`. |
+| `GMAIL_USER` | See [Gmail SMTP setup](#1a-set-up-gmail-smtp-booking-code-email). |
+| `GMAIL_APP_PASSWORD` | 16-character App Password for that Gmail account (not your normal password). |
 | `ENABLE_SMS` | Set to `true` to enable Twilio SMS (off by default). |
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_FROM` | Optional — see [Twilio setup](#1b-optional-text-the-code-via-twilio). |
 
-#### 1a. Set up Resend (booking-code email)
+#### 1a. Set up Gmail SMTP (booking-code email)
 
-1. Create a free account at [resend.com](https://resend.com).
-2. Verify a sending domain at [resend.com/domains](https://resend.com/domains) — add the DNS records Resend gives you (SPF/DKIM) at your registrar. Until verified, you can only send test emails to your own account email.
-3. Create an API key at [resend.com/api-keys](https://resend.com/api-keys) → put it in `RESEND_API_KEY`.
-4. Set `RESEND_FROM_EMAIL` to an address on your verified domain.
+Emails send through Nodemailer over Gmail's SMTP, using the Gmail account
+you point it at:
+
+1. Turn on **2-Step Verification** on the Gmail account you want to send from, if it isn't already: [myaccount.google.com/security](https://myaccount.google.com/security).
+2. Generate an **App Password**: Google Account → Security → 2-Step Verification → **App passwords**. Create one (any name, e.g. "Sooner Shuttle") — Google gives you a 16-character password. Your normal Gmail password won't work for SMTP.
+3. Set `GMAIL_USER` to that Gmail address, and `GMAIL_APP_PASSWORD` to the 16-character app password (spaces are fine either way).
+
+Emails send as `"Sooner Shuttle Service" <GMAIL_USER>`. Gmail's SMTP has a sending-volume limit (roughly 500/day on a normal account) — plenty for a one-day event, but not something to build a bigger product on.
 
 Stripe Checkout collects the rider's email automatically — no additional configuration needed.
 
